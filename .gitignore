@@ -1,0 +1,5 @@
+.training
+.idea
+__pycache__
+rps_data_sample
+exported_model

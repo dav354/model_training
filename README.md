@@ -1,17 +1,14 @@
 ## Make own Model
 
-```shell
-unzip assets/rps_data_sample.zip 
-python3 train_model.py
-```
+### Train the model
 
 ```shell
-python3.10 -m venv .training
-source .training/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+unzip assets/rps_data_sample.zip
 
-```shell
+docker build -t rps-tpu-builder .
 
+docker run --rm \
+  -v "$PWD/rps_data_sample":/app/training_data:ro \
+  -v "$PWD/result":/app/build \
+  rps-tpu-builder
 ```

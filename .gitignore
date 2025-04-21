@@ -3,3 +3,5 @@
 __pycache__
 rps_data_sample
 exported_model
+.direnv
+rps_data_sample

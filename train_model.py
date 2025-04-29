@@ -5,11 +5,12 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 import mediapipe as mp
 import subprocess
+from tensorflow.keras.callbacks import EarlyStopping
 
 # === Config ===
 labels = {'none': 0, 'rock': 1, 'paper': 2, 'scissors': 3}
-dataset_dir = "/app/training_data"
-model_name = "/app/build/model.tflite" 
+dataset_dir = "./app/training_data"
+model_name = "./app/build/model.tflite"
 
 # === Step 1: Extract landmarks ===
 print("[INFO] Extracting hand landmarks...")
@@ -19,7 +20,13 @@ X, y = [], []
 for gesture in labels:
     gesture_dir = os.path.join(dataset_dir, gesture)
     for img_name in os.listdir(gesture_dir):
-        img = cv2.imread(os.path.join(gesture_dir, img_name))
+        if not img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            continue
+        img_path = os.path.join(gesture_dir, img_name)
+        img = cv2.imread(img_path)
+        if img is None:
+            print(f"[WARN] Could not read {img_path}, skipping.")
+            continue
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = mp_hands.process(img_rgb)
         if results.multi_hand_landmarks:
@@ -38,16 +45,39 @@ X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2)
 
 model = tf.keras.Sequential([
     tf.keras.layers.Input(shape=(42,)),
+    tf.keras.layers.Dense(128, activation="relu"),
+    tf.keras.layers.Dropout(0.3),
     tf.keras.layers.Dense(64, activation="relu"),
+    tf.keras.layers.Dropout(0.2),
     tf.keras.layers.Dense(32, activation="relu"),
     tf.keras.layers.Dense(4, activation="softmax")
 ])
+
 model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
-model.fit(X_train, y_train, epochs=20, validation_data=(X_val, y_val))
+
+early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=50,
+    batch_size=32,
+    callbacks=[early_stop],
+    verbose=1
+)
 
 model.save("saved_rps_model")
 
-# === Step 3: Convert to INT8 TFLite ===
+# === Step 3: Evaluate performance ===
+val_acc = history.history["val_accuracy"][-1]
+print(f"[📊] Final Validation Accuracy: {val_acc*100:.2f}%")
+baseline = 0.90  # Adjust this if you have a known baseline
+if val_acc > baseline:
+    print(f"[✅] Model improved compared to baseline ({baseline*100:.1f}%)!")
+else:
+    print(f"[⚠️] Model underperformed compared to baseline ({baseline*100:.1f}%).")
+
+# === Step 4: Convert to INT8 TFLite ===
 print("[INFO] Converting to TFLite INT8...")
 converter = tf.lite.TFLiteConverter.from_saved_model("saved_rps_model")
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
@@ -67,7 +97,7 @@ with open(model_name, "wb") as f:
 
 print(f"[✅] TFLite model saved to {model_name}")
 
-# === Step 4: Compile for Edge TPU ===
+# === Step 5: Compile for Edge TPU ===
 print("[INFO] Compiling for Edge TPU...")
 compile_result = subprocess.run(
     ["edgetpu_compiler", model_name, "-o", "/app/build"],

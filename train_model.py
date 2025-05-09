@@ -14,7 +14,8 @@ dataset_dir = "/app/training_data"
 model_name = "/app/build/model.tflite"
 
 print("[INFO] Extracting and augmenting hand landmarks...")
-mp_hands = mp.solutions.hands.Hands(static_image_mode=True)
+
+mp_hands = mp.solutions.hands.Hands(static_image_mode=True, max_num_hands=1)
 X, y = [], []
 
 def add_noise(landmarks, noise_level=0.01):
@@ -22,6 +23,12 @@ def add_noise(landmarks, noise_level=0.01):
 
 def jitter_landmarks(landmarks, level=0.01):
     return landmarks + np.random.uniform(-level, level, landmarks.shape)
+
+def rotate_landmarks(landmarks, angle_deg):
+    angle_rad = np.deg2rad(angle_deg)
+    c, s = np.cos(angle_rad), np.sin(angle_rad)
+    R = np.array([[c, -s], [s, c]])
+    return landmarks @ R
 
 def align_landmarks(landmarks):
     p0 = landmarks[0]
@@ -32,37 +39,53 @@ def align_landmarks(landmarks):
     R = np.array([[c, -s], [s, c]])
     return (landmarks - p0) @ R
 
+total_images = 0
+valid_samples = 0
+
 for gesture in labels:
     gesture_dir = os.path.join(dataset_dir, gesture)
     for img_name in os.listdir(gesture_dir):
         if not img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
             continue
+        total_images += 1
         img_path = os.path.join(gesture_dir, img_name)
         img = cv2.imread(img_path)
         if img is None:
-            print(f"[WARN] Could not read {img_path}, skipping.")
             continue
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = mp_hands.process(img_rgb)
-        if results.multi_hand_landmarks:
-            landmarks = results.multi_hand_landmarks[0]
-            coords = np.array([[lm.x, lm.y] for lm in landmarks.landmark])
+
+        for flip in [1, -1]:
+            if flip == -1:
+                flipped = cv2.flip(img_rgb, 1)
+                results = mp_hands.process(flipped)
+                if not results.multi_hand_landmarks:
+                    continue
+                landmarks = results.multi_hand_landmarks[0]
+                coords = np.array([[lm.x, lm.y] for lm in landmarks.landmark])
+                coords[:, 0] = 1.0 - coords[:, 0]  # mirror x
+            else:
+                results = mp_hands.process(img_rgb)
+                if not results.multi_hand_landmarks:
+                    continue
+                landmarks = results.multi_hand_landmarks[0]
+                coords = np.array([[lm.x, lm.y] for lm in landmarks.landmark])
+
             coords = align_landmarks(coords)
             coords = coords - coords.min(axis=0)
             coords = coords / coords.max() if coords.max() > 0 else coords
 
-            for flip in [1, -1]:
-                aug_coords = coords * [flip, 1]
-                scale = np.random.uniform(0.9, 1.1)
-                offset = np.random.normal(0, 0.01, aug_coords.shape)
-                aug_coords = scale * aug_coords + offset
-                aug_coords = jitter_landmarks(aug_coords)
-                flat_coords = add_noise(aug_coords.flatten())
+            for angle in [0, 90, 180, 270, np.random.uniform(10, 350)]:
+                rotated = rotate_landmarks(coords, angle)
+                scaled = rotated * np.random.uniform(0.9, 1.1)
+                offset = np.random.normal(0, 0.01, scaled.shape)
+                jittered = jitter_landmarks(scaled + offset)
+                flat_coords = add_noise(jittered.flatten())
                 X.append(flat_coords)
                 y.append(labels[gesture])
+                valid_samples += 1
 
+print(f"[INFO] Processed {total_images} images -> {valid_samples} augmented samples.")
 X, y = np.array(X), np.array(y)
-print(f"[INFO] Augmented dataset: {len(X)} samples.")
 np.savez("/app/build/rps_landmarks.npz", X=X, y=y)
 
 # === Step 2: Train model ===

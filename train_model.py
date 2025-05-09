@@ -6,7 +6,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils import class_weight
 import mediapipe as mp
 import subprocess
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, Callback
 
 # === Config ===
 labels = {'none': 0, 'rock': 1, 'paper': 2, 'scissors': 3}
@@ -107,14 +107,25 @@ lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
     staircase=True
 )
 
-def focal_loss(gamma=2.0, alpha=0.25):
+def smooth_labels(y_true, smoothing=0.1, num_classes=4):
+    y_true = tf.one_hot(tf.cast(y_true, tf.int32), depth=num_classes)
+    return y_true * (1 - smoothing) + (smoothing / num_classes)
+
+def focal_loss(gamma=2.0, alpha=0.25, label_smoothing=0.1):
     def loss(y_true, y_pred):
-        y_true = tf.one_hot(tf.cast(y_true, tf.int32), depth=4)
+        y_true = smooth_labels(y_true, smoothing=label_smoothing)
         y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0)
         cross_entropy = -y_true * tf.math.log(y_pred)
         weight = alpha * tf.pow(1 - y_pred, gamma)
         return tf.reduce_mean(tf.reduce_sum(weight * cross_entropy, axis=1))
     return loss
+
+class HardNegativeLogger(Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        preds = np.argmax(self.model.predict(X_val), axis=1)
+        wrong = preds != y_val
+        if np.any(wrong):
+            print(f"[HNM] Misclassified samples: {np.sum(wrong)}")
 
 model = tf.keras.Sequential([
     tf.keras.layers.Input(shape=(42,)),
@@ -137,6 +148,7 @@ model.compile(
 
 early_stop = EarlyStopping(monitor='val_loss', patience=15, min_delta=0.002, restore_best_weights=True)
 model_ckpt = ModelCheckpoint("saved_rps_model", save_best_only=True, save_format="tf")
+hnm_logger = HardNegativeLogger()
 
 history = model.fit(
     X_train, y_train,
@@ -144,7 +156,7 @@ history = model.fit(
     epochs=100,
     batch_size=32,
     class_weight=class_weights,
-    callbacks=[early_stop, model_ckpt],
+    callbacks=[early_stop, model_ckpt, hnm_logger],
     verbose=1
 )
 
@@ -193,3 +205,12 @@ try:
 
 except Exception as e:
     print("[❌] Error during TFLite conversion:", e)
+
+# === Test-Time Augmentation Prediction ===
+def predict_with_tta(model, sample, angles=[0, 90, 180, 270]):
+    preds = []
+    coords = sample.reshape(-1, 2)
+    for angle in angles:
+        rotated = rotate_landmarks(coords, angle).flatten()
+        preds.append(model(np.expand_dims(rotated, axis=0), training=False))
+    return tf.reduce_mean(preds, axis=0)

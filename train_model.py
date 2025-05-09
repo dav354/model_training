@@ -62,7 +62,7 @@ for gesture in labels:
                     continue
                 landmarks = results.multi_hand_landmarks[0]
                 coords = np.array([[lm.x, lm.y] for lm in landmarks.landmark])
-                coords[:, 0] = 1.0 - coords[:, 0]  # mirror x
+                coords[:, 0] = 1.0 - coords[:, 0]
             else:
                 results = mp_hands.process(img_rgb)
                 if not results.multi_hand_landmarks:
@@ -94,7 +94,6 @@ X_train, X_val, y_train, y_val = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-# Compute class weights to address imbalance
 class_weights = class_weight.compute_class_weight(
     class_weight='balanced', classes=np.unique(y_train), y=y_train
 )
@@ -107,6 +106,15 @@ lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
     decay_rate=0.95,
     staircase=True
 )
+
+def focal_loss(gamma=2.0, alpha=0.25):
+    def loss(y_true, y_pred):
+        y_true = tf.one_hot(tf.cast(y_true, tf.int32), depth=4)
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0)
+        cross_entropy = -y_true * tf.math.log(y_pred)
+        weight = alpha * tf.pow(1 - y_pred, gamma)
+        return tf.reduce_mean(tf.reduce_sum(weight * cross_entropy, axis=1))
+    return loss
 
 model = tf.keras.Sequential([
     tf.keras.layers.Input(shape=(42,)),
@@ -123,7 +131,7 @@ model = tf.keras.Sequential([
 
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
-    loss="sparse_categorical_crossentropy",
+    loss=focal_loss(),
     metrics=["accuracy"]
 )
 
